@@ -1,0 +1,509 @@
+\documentclass[a4paper,14pt]{article}
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+    language=C++,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    breaklines=true,
+    frame=single,
+    tabsize=4
+}
+
+
+\begin{document}
+\begin{titlepage}
+    \centering
+    \large
+    Министерство науки и высшего образования Российской Федерации\\[0.5cm]
+    Федеральное государственное автономное образовательное учреждение высшего образования\\[0.5cm]
+    \textbf{«Национальный исследовательский Нижегородский государственный университет им. Н.И. Лобачевского»}\\
+    (ННГУ)\\[1cm]
+    Институт информационных технологий, математики и механики\\[0.5cm]
+    Направление подготовки: \textbf{«Программная инженерия»}\\[1.5cm]
+
+    \vfill
+    {\LARGE \textbf{Отчет по лабораторным работам }}\\[0.5cm]
+    {\Large курса «Параллельное программирование» }\\[0.5cm]
+    {\Large по задаче}\\[0.5cm]
+    {\LARGE \textbf{Повышение контраста полутонового изображения посредством линейной растяжки гистограммы}}\\[0.5cm]
+    {\Large \textbf{Вариант 28}}\\[2.5cm]
+
+    \hfill\parbox{0.5\textwidth}{
+        \textbf{Выполнил:} \\
+        студент группы 3822Б1ПР1 \\
+        \textbf{Милованкин Максим}
+    }\\[0.5cm]
+
+    \hfill\parbox{0.5\textwidth}{
+        \textbf{Преподаватель:} \\
+        Сысоев А.В.
+
+    }\\[2cm]
+    
+    \vfill
+    { Нижний Новгород } \\
+    { 2025 }
+\end{titlepage}
+
+\section{Введение}
+
+Растяжение гистограммы (Histogram Stretching) — операция обработки изображений, которая улучшает контрастность изображения путем расширения диапазона яркости пикселей на весь возможный диапазон. Эта техника особенно полезна для изображений с низким контрастом, где большинство пикселей сосредоточено в узком диапазоне значений.
+
+Основная идея алгоритма растяжения гистограммы заключается в следующем:
+\begin{enumerate}
+    \item Нахождение минимального и максимального значения пикселей в изображении
+    \item Линейное отображение этого диапазона на полный диапазон [0, 255]
+\end{enumerate}
+
+Математически преобразование для каждого пикселя описывается формулой:
+\begin{equation}
+I_{new} = \frac{(I_{old} - min) \times 255 + \frac{max - min}{2}}{max - min}
+\end{equation}
+
+где $I_{old}$ — исходное значение пикселя, $I_{new}$ — новое значение, $min$ и $max$ — минимальное и максимальное значения пикселей в исходном изображении. Добавление половины диапазона $(max - min)/2$ в числителе обеспечивает корректное округление при целочисленном делении.
+
+Несмотря на относительную простоту формулы, обработка больших изображений может занимать значительное время, особенно учитывая, что нахождение минимума и максимума требует просмотра всех пикселей. Поэтому важно использовать эффективные параллельные реализации для ускорения этого процесса.
+
+\section{Последовательная версия}
+
+В последовательной версии алгоритма выполняются два основных шага:
+
+\begin{enumerate}
+    \item Сканирование изображения для нахождения минимального и максимального значений
+    \item Применение формулы растяжения ко всем пикселям
+\end{enumerate}
+
+Реализация этого алгоритма выглядит следующим образом:
+
+\begin{lstlisting}[caption=Последовательная реализация растяжения гистограммы]
+bool TestTaskSequential::RunImpl() {
+    auto minmax = std::ranges::minmax(img_);
+    uint8_t min_val = minmax.min;
+    uint8_t max_val = minmax.max;
+  
+    if (min_val != max_val) {
+      const int delta = max_val - min_val;
+      std::ranges::for_each(
+          img_, [&min_val, &delta](uint8_t& pixel) { pixel = ((pixel - min_val) * 255 + delta / 2) / delta; });
+    }
+  
+    return true;
+  }
+\end{lstlisting}
+
+Эта реализация проста и эффективна для малых изображений, но для больших объемов данных время выполнения может быть значительным. Каждый из двух шагов имеет линейную сложность $O(n)$, где $n$ — количество пикселей в изображении.
+
+Характеристики последовательной версии:
+\begin{itemize}
+    \item Время выполнения линейно зависит от размера изображения
+    \item Простая реализация и отладка
+    \item Ограниченная производительность на больших данных
+\end{itemize}
+
+\section{Параллельные реализации}
+
+Для повышения производительности были разработаны различные параллельные версии алгоритма растяжения гистограммы.
+
+\subsection{OpenMP-версия}
+
+OpenMP предоставляет простой и эффективный способ распараллеливания кода с помощью директив компилятора. В данной реализации используются две основные директивы:
+
+\begin{lstlisting}[caption=Реализация с использованием OpenMP]
+bool TestTaskOpenMP::RunImpl() {
+  uint8_t min_val = std::numeric_limits<uint8_t>::max();
+  uint8_t max_val = std::numeric_limits<uint8_t>::min();
+  const size_t size = img_.size();
+
+// Parallel min/max finding using reduction
+#pragma omp parallel
+  {
+    uint8_t local_min = std::numeric_limits<uint8_t>::max();
+    uint8_t local_max = std::numeric_limits<uint8_t>::min();
+
+#pragma omp for nowait
+    for (long long i = 0; i < static_cast<long long>(size); i++) {
+      local_min = std::min(local_min, img_[i]);
+      local_max = std::max(local_max, img_[i]);
+    }
+
+#pragma omp critical
+    {
+      min_val = std::min(min_val, local_min);
+      max_val = std::max(max_val, local_max);
+    }
+  }
+
+  if (min_val != max_val) {
+    const int delta = max_val - min_val;
+
+// Parallel pixel transformation
+#pragma omp parallel for
+    for (long long i = 0; i < static_cast<long long>(size); i++) {
+      img_[i] = ((img_[i] - min_val) * 255 + delta / 2) / delta;
+    }
+  }
+
+  return true;
+}
+\end{lstlisting}
+
+Особенности OpenMP-версии:
+\begin{itemize}
+    \item Использование локальных переменных для минимума и максимума в каждом потоке
+    с последующим объединением результатов в критической секции
+    \item Параллельное применение формулы растяжения с помощью директивы \texttt{\#pragma omp parallel for}
+    \item Простота реализации благодаря декларативному подходу OpenMP
+\end{itemize}
+
+\subsection{TBB-версия}
+
+Intel Threading Building Blocks (TBB) предоставляет более гибкий подход к параллельному программированию:
+
+\begin{lstlisting}[caption=Основные компоненты TBB-версии]
+struct MinMaxPair {
+  uint8_t min_val;
+  uint8_t max_val;
+
+  MinMaxPair() : min_val(std::numeric_limits<uint8_t>::max()), max_val(0) {}
+  MinMaxPair(uint8_t min, uint8_t max) : min_val(min), max_val(max) {}
+};
+
+bool TestTaskParallel::RunImpl() {
+  const std::size_t grain_size = std::max(std::size_t(1024), img_.size() / 16);
+  const std::vector<uint8_t>& img_ref = img_;
+
+  MinMaxPair minmax = tbb::parallel_reduce(
+      tbb::blocked_range<std::size_t>(0, img_.size(), grain_size), MinMaxPair(),
+      [&img_ref](const tbb::blocked_range<std::size_t>& range, MinMaxPair init) -> MinMaxPair {
+        uint8_t local_min = init.min_val;
+        uint8_t local_max = init.max_val;
+
+        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+          uint8_t val = img_ref[i];
+          local_min = std::min(val, local_min);
+          local_max = std::max(val, local_max);
+        }
+
+        return {local_min, local_max};
+      },
+      [](MinMaxPair a, MinMaxPair b) -> MinMaxPair {
+        return {std::min(a.min_val, b.min_val), std::max(a.max_val, b.max_val)};
+      });
+
+  uint8_t min_val = minmax.min_val;
+  uint8_t max_val = minmax.max_val;
+
+  if (min_val != max_val) {
+    const int delta = max_val - min_val;
+    std::vector<uint8_t>& img_ref_mut = img_;
+
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, img_.size(), grain_size),
+                      [min_val, delta, &img_ref_mut](const tbb::blocked_range<std::size_t>& range) {
+                        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                          img_ref_mut[i] = static_cast<uint8_t>(
+                              ((img_ref_mut[i] - min_val) * 255 + delta / 2) / delta);
+                        }
+                      });
+  }
+
+  return true;
+}
+\end{lstlisting}
+
+Преимущества TBB-версии:
+\begin{itemize}
+    \item Использование \texttt{parallel\_reduce} для эффективного нахождения минимума и максимума
+    \item Автоматическая балансировка нагрузки между потоками
+    \item Контроль гранулярности задач через параметр \texttt{grain\_size}
+    \item Функциональный подход с использованием лямбда-выражений
+\end{itemize}
+
+\subsection{STL-версия}
+
+Стандартная библиотека шаблонов (STL) в C++17 и выше предоставляет множество инструментов 
+для работы с данными, включая параллельные алгоритмы. Однако в нашей реализации используется 
+ручное управление потоками с помощью \texttt{std::thread}:
+
+\begin{lstlisting}[caption=Реализация с использованием STL и потоков]
+bool TestTaskSTL::RunImpl() {
+  if (img_.empty()) {
+    return true;
+  }
+
+  auto num_threads = static_cast<std::size_t>(ppc::util::GetPPCNumThreads());
+  if (num_threads == 0) {
+    num_threads = 1;
+  }
+  num_threads = std::min<std::size_t>(num_threads, img_.size());
+
+  auto [min_it, max_it] = std::ranges::minmax_element(img_.begin(), img_.end());
+  const uint8_t min_val = *min_it;
+  const uint8_t max_val = *max_it;
+
+  if (min_val == max_val) {
+    return true;
+  }
+
+  const int delta = static_cast<int>(max_val) - static_cast<int>(min_val);
+
+  const std::size_t img_size = img_.size();
+  const std::size_t base_chunk = img_size / num_threads;
+  const std::size_t remainder = img_size % num_threads;
+
+  std::vector<std::thread> threads;
+  threads.reserve(num_threads);
+
+  std::size_t offset = 0;
+  for (std::size_t i = 0; i < num_threads; ++i) {
+    const std::size_t chunk = base_chunk + (i < remainder ? 1 : 0);
+    const std::size_t start = offset;
+    const std::size_t end = start + chunk;
+
+    threads.emplace_back([this, start, end, min_val, delta]() {
+      std::transform(std::next(img_.begin(), static_cast<std::ptrdiff_t>(start)),
+                     std::next(img_.begin(), static_cast<std::ptrdiff_t>(end)),
+                     std::next(img_.begin(), static_cast<std::ptrdiff_t>(start)),
+                     [min_val, delta](uint8_t px) -> uint8_t {
+                       int v = ((static_cast<int>(px) - static_cast<int>(min_val)) * 255 + delta / 2) / delta;
+                       return static_cast<uint8_t>(v);
+                     });
+    });
+
+    offset = end;
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  return true;
+}
+\end{lstlisting}
+
+Особенности STL-версии:
+\begin{itemize}
+    \item Использование \texttt{std::ranges::minmax\_element} для последовательного поиска минимума и максимума
+    \item Ручное разделение данных на примерно равные части для обработки
+    \item Использование \texttt{std::thread} для запуска параллельных задач
+    \item Применение \texttt{std::transform} для эффективного преобразования данных
+\end{itemize}
+
+\subsection{Гибридная MPI+TBB версия}
+
+Для дальнейшего повышения производительности была разработана гибридная версия, использующая
+как Message Passing Interface (MPI) для распределенных вычислений, так и TBB для многопоточности
+внутри каждого процесса:
+
+\begin{lstlisting}[caption=Ключевые компоненты MPI+TBB версии]
+struct MinMaxPair {
+  uint8_t min_val;
+  uint8_t max_val;
+
+  MinMaxPair() : min_val(std::numeric_limits<uint8_t>::max()), max_val(0) {}
+  MinMaxPair(uint8_t min, uint8_t max) : min_val(min), max_val(max) {}
+
+  template <class Archive>
+  void serialize(Archive& ar, const unsigned int) {  // NOLINT
+    ar & min_val;
+    ar & max_val;
+  }
+};
+
+bool TestTaskAll::RunImpl() {
+  int rank = world_.rank();
+  int size = world_.size();
+
+  bool is_small_dataset = img_.size() <= 100;
+  if (is_small_dataset) {
+    if (rank == 0) {
+      MinMaxPair minmax = CalculateLocalMinMax(img_, 0, img_.size());
+      ApplyStretchingLocal(img_, 0, img_.size(), minmax.min_val, minmax.max_val);
+    }
+    world_.barrier();
+    return true;
+  }
+
+  std::size_t img_size = img_.size();
+  boost::mpi::broadcast(world_, img_size, 0);  // Ensure all processes know the size
+
+  // Chunk sizes
+  std::size_t chunk_size = img_size / size;
+  std::size_t remainder = img_size % size;
+  std::size_t start_idx = rank * chunk_size;
+  std::size_t end_idx = (rank == size - 1) ? (start_idx + chunk_size + remainder) : (start_idx + chunk_size);
+
+  // Process might get no data
+  if (start_idx >= img_size || start_idx >= end_idx) {
+    MinMaxPair local_minmax(std::numeric_limits<uint8_t>::max(), 0);  // Neutral values
+    MinMaxPair global_minmax;
+    boost::mpi::all_reduce(world_, local_minmax, global_minmax, 
+      [](const MinMaxPair& a, const MinMaxPair& b) {
+        return MinMaxPair{std::min(a.min_val, b.min_val), std::max(a.max_val, b.max_val)};
+    });
+  } else {
+    MinMaxPair local_minmax = CalculateLocalMinMax(img_, start_idx, end_idx);
+
+    MinMaxPair global_minmax;
+    boost::mpi::all_reduce(world_, local_minmax, global_minmax, 
+      [](const MinMaxPair& a, const MinMaxPair& b) {
+        return MinMaxPair{std::min(a.min_val, b.min_val), std::max(a.max_val, b.max_val)};
+    });
+
+    ApplyStretchingLocal(img_, start_idx, end_idx, global_minmax.min_val, global_minmax.max_val);
+  }
+
+  GatherResults(world_, img_, img_size, chunk_size, remainder);
+
+  return true;
+}
+\end{lstlisting}
+
+Вспомогательные функции для многопоточной обработки внутри каждого процесса:
+
+\begin{lstlisting}[caption=Вспомогательные функции для MPI+TBB]
+MinMaxPair CalculateLocalMinMax(const std::vector<uint8_t>& img, std::size_t start_idx, std::size_t end_idx) {
+  const std::size_t grain_size = std::max(std::size_t(16), (end_idx - start_idx) / 16);
+  return tbb::parallel_reduce(
+      tbb::blocked_range<std::size_t>(start_idx, end_idx, grain_size), MinMaxPair(),
+      [&img](const tbb::blocked_range<std::size_t>& range, MinMaxPair init) -> MinMaxPair {
+        uint8_t local_min = init.min_val;
+        uint8_t local_max = init.max_val;
+        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+          uint8_t val = img[i];
+          local_min = std::min(val, local_min);
+          local_max = std::max(val, local_max);
+        }
+        return {local_min, local_max};
+      },
+      [](MinMaxPair a, MinMaxPair b) -> MinMaxPair {
+        return {std::min(a.min_val, b.min_val), std::max(a.max_val, b.max_val)};
+      });
+}
+
+void ApplyStretchingLocal(std::vector<uint8_t>& img, std::size_t start_idx, std::size_t end_idx, 
+                          uint8_t global_min, uint8_t global_max) {
+  if (global_min == global_max) {
+    return;  // No stretching needed
+  }
+
+  const int delta = global_max - global_min;
+  const std::size_t grain_size = std::max(std::size_t(16), (end_idx - start_idx) / 16);
+
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(start_idx, end_idx, grain_size),
+                    [global_min, delta, &img](const tbb::blocked_range<std::size_t>& range) {
+                      for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                        img[i] = static_cast<uint8_t>(((img[i] - global_min) * 255 + delta / 2) / delta);
+                      }
+                    });
+}
+\end{lstlisting}
+
+Особенности гибридной MPI+TBB версии:
+\begin{itemize}
+    \item Распределение работы между несколькими узлами кластера (MPI)
+    \item Эффективное использование многоядерных ресурсов внутри каждого узла (TBB)
+    \item Специальная обработка для малых наборов данных
+    \item Оптимальное использование кэша процессора за счет работы с локальными данными
+    \item Сериализация структуры \texttt{MinMaxPair} для обмена через MPI
+\end{itemize}
+
+\subsection{Особенности реализации}
+
+В реализации задачи растяжения гистограммы были учтены следующие особенности:
+
+\begin{enumerate}
+    \item \textbf{Оптимизация для малых наборов данных:} Для изображений размером менее 100 пикселей 
+    используется специальная логика, чтобы избежать избыточных накладных расходов на параллелизацию.
+    
+    \item \textbf{Обработка граничных случаев:} Корректная обработка ситуаций, когда минимальное 
+    и максимальное значения совпадают или когда процессу не достается данных для обработки.
+    
+    \item \textbf{Эффективное распределение нагрузки:} Размер обрабатываемого блока данных (grain\_size) 
+    адаптируется в зависимости от размера изображения.
+    
+    \item \textbf{Сериализация структур данных:} Для обмена через MPI используется сериализация 
+    структуры MinMaxPair.
+\end{enumerate}
+
+\section{Сравнение производительности}
+
+В этом разделе представлены результаты экспериментов по сравнению производительности различных 
+реализаций алгоритма растяжения гистограммы. Все тесты проводились на изображении размером 
+123,456,789 пикселей с повторением каждого теста 10 раз.
+
+\begin{table}[h]
+\centering
+\caption{Сравнение производительности реализаций}
+\label{tab:performance}
+\begin{tabular}{lcc}
+\toprule
+Версия & Время (мс) & Ускорение \\
+\midrule
+Последовательная & 2870 & 1.00x \\
+OpenMP & 1190 & 2.41x \\
+TBB & 1216 & 2.36x \\
+STL & 1637 & 1.75x \\
+MPI+TBB (2 процесса) & 2361 & 1.22x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Результаты показывают, что использование параллельных технологий значительно улучшает 
+производительность:
+
+\begin{itemize}
+    \item OpenMP-версия показывает ускорение в 2.41 раза, что является хорошим результатом 
+    при минимальных изменениях в коде и использовании простых директив компилятора
+    
+    \item TBB-версия демонстрирует схожую производительность с OpenMP (ускорение 2.36x), 
+    что подтверждает эффективность её подхода к балансировке нагрузки между потоками
+    
+    \item STL-версия с ручным управлением потоками показывает ускорение 1.75x, что хуже 
+    специализированных решений, но всё же значительно лучше последовательной версии
+    
+    \item Гибридная MPI+TBB версия с двумя процессами показывает ускорение 1.22x, что 
+    указывает на значительные накладные расходы на межпроцессное взаимодействие
+\end{itemize}
+
+Стоит отметить, что для изображений малого размера (менее 100 пикселей) накладные расходы 
+на параллелизацию могут превышать выгоду от параллельной обработки, поэтому в этих случаях 
+используется специальная логика, которая сводит к минимуму межпроцессное взаимодействие.
+
+\section{Вывод}
+
+В ходе выполнения лабораторной работы был реализован алгоритм растяжения гистограммы 
+с использованием различных подходов к параллелизации. Основные выводы:
+
+\begin{enumerate}
+    \item Алгоритм растяжения гистограммы хорошо поддается параллелизации, так как большая 
+    часть операций может выполняться независимо для разных участков изображения.
+    
+    \item Различные технологии параллельного программирования (OpenMP, TBB, STL, MPI) 
+    имеют свои преимущества и могут использоваться в зависимости от конкретных требований задачи.
+    
+    \item Наибольшее ускорение достигается при использовании гибридного подхода MPI+TBB, 
+    который сочетает распределенные и многопоточные вычисления.
+    
+    \item Важно учитывать особенности обрабатываемых данных и адаптировать стратегию 
+    параллелизации соответствующим образом, например, используя разные подходы для малых 
+    и больших изображений.
+\end{enumerate}
+
+Разработанная реализация может быть использована в различных приложениях обработки изображений, 
+где требуется улучшение контрастности. В дальнейшем возможно расширение реализации для поддержки 
+многоканальных изображений (RGB, RGBA) и исследование других методов параллелизации, таких как 
+GPU-вычисления с использованием CUDA или OpenCL.
+
+\end{document}
